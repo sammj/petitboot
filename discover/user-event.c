@@ -395,8 +395,12 @@ static int user_event_dhcp(struct user_event *uev, struct event *event)
 	       hwaddr, hwaddr + 1, hwaddr + 2,
 	       hwaddr + 3, hwaddr + 4, hwaddr + 5);
 
-	system_info_set_interface_address(sizeof(hwaddr), hwaddr,
-					  event_get_param(event, "ip"));
+	if (event_get_param(event, "ipv6"))
+		system_info_set_interface_address(sizeof(hwaddr), hwaddr,
+						  event_get_param(event, "ipv6"));
+	else
+		system_info_set_interface_address(sizeof(hwaddr), hwaddr,
+						  event_get_param(event, "ip"));
 
 	dev = discover_device_create(handler, event_get_param(event, "mac"),
 					event->device);
