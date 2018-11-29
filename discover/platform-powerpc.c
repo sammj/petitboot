@@ -27,13 +27,18 @@ static const char *devtree_dir = "/proc/device-tree/";
 struct platform_powerpc {
 	struct param_list *params;
 	struct ipmi	*ipmi;
-	bool		ipmi_bootdev_persistent;
+	char		*ipmi_mailbox_original_config;
 	int		(*get_ipmi_bootdev)(
 				struct platform_powerpc *platform,
 				uint8_t *bootdev, bool *persistent);
 	int		(*clear_ipmi_bootdev)(
 				struct platform_powerpc *platform,
 				bool persistent);
+	int		(*get_ipmi_boot_mailbox)(
+				struct platform_powerpc *platform,
+				char **buf);
+	int		(*clear_ipmi_boot_mailbox)(
+				struct platform_powerpc *platform);
 	int 		(*set_os_boot_sensor)(
 				struct platform_powerpc *platform);
 	void		(*get_platform_versions)(struct system_info *info);
@@ -429,6 +434,184 @@ static int get_ipmi_bootdev_ipmi(struct platform_powerpc *platform,
 	return 0;
 }
 
+static int get_ipmi_boot_mailbox_block(struct platform_powerpc *platform,
+		char *buf, uint8_t block)
+{
+	const size_t blocksize = 16;
+	uint8_t resp[3 + blocksize];
+	uint16_t resp_len;
+	char *debug_buf;
+	int rc;
+	uint8_t req[] = {
+		0x07,  /* parameter selector: boot initiator mailbox */
+		block, /* set selector */
+		0x00,  /* no block selector */
+	};
+
+	resp_len = sizeof(resp);
+	rc = ipmi_transaction(platform->ipmi, IPMI_NETFN_CHASSIS,
+			IPMI_CMD_CHASSIS_GET_SYSTEM_BOOT_OPTIONS,
+			req, sizeof(req),
+			resp, &resp_len,
+			ipmi_timeout);
+	if (rc) {
+		pb_log("platform: error reading IPMI boot options\n");
+		return -1;
+	}
+
+	if (resp_len < sizeof(resp)) {
+		pb_log("platform: unexpected length (%d) in "
+				"boot options mailbox response\n", resp_len);
+		return -1;
+	}
+
+	debug_buf = format_buffer(platform, resp, resp_len);
+	pb_debug_fn("IPMI bootdev mailbox block %hu:\n%s\n", block, debug_buf);
+	talloc_free(debug_buf);
+
+	if (resp[0] != 0) {
+		pb_log("platform: non-zero completion code %d from IPMI req\n",
+				resp[0]);
+		return -1;
+	}
+
+	/* check for correct parameter version */
+	if ((resp[1] & 0xf) != 0x1) {
+		pb_log("platform: unexpected version (0x%x) in "
+				"boot mailbox response\n", resp[0]);
+		return -1;
+	}
+
+	/* check for valid paramters */
+	if (resp[2] & 0x80) {
+		pb_debug("platform: boot mailbox parameters are invalid/locked\n");
+		return -1;
+	}
+
+	memcpy(buf, &resp[3], blocksize);
+
+	return 0;
+}
+
+static int get_ipmi_boot_mailbox(struct platform_powerpc *platform,
+		char **buf)
+{
+	const size_t blocksize = 16;
+	char *mailbox_buffer, *prefix;
+	int content_size;
+	uint8_t i;
+	int rc;
+
+	mailbox_buffer = talloc_array(platform, char, blocksize * 16);
+	if (!mailbox_buffer) {
+		pb_log_fn("Failed to allocate mailbox buffer\n");
+		return -1;
+	}
+
+	/*
+	 * The mailbox can hold up to 16 16-byte blocks which we must request
+	 * individually. The mininum number required by the spec is 5 blocks,
+	 * but work with what we've got if we get less.
+	 */
+	for (i = 0; i < 16; i++) {
+		rc = get_ipmi_boot_mailbox_block(platform,
+				mailbox_buffer + (i * 16), i);
+		if (rc && i == 0) {
+			/* Immediate failure, no blocks read */
+			return -1;
+		}
+		if (rc)
+			break;
+
+		if (i == 0) {
+			/*
+			 * The first three bytes of block zero are an IANA
+			 * Enterprise ID number. Check it matches the IBM
+			 * number, '2'.
+			 */
+			if (mailbox_buffer[0] != 0x02 ||
+				mailbox_buffer[1] != 0x00 ||
+				mailbox_buffer[2] != 0x00) {
+				pb_log_fn("IANA number unrecognised: 0x%x:0x%x:0x%x\n",
+						mailbox_buffer[0],
+						mailbox_buffer[1],
+						mailbox_buffer[2]);
+				return -1;
+			}
+		}
+	}
+
+	if (i < 5)
+		pb_log_fn("Only %hu blocks read, spec requires at least 5.\n"
+			  "Send a bug report to your preferred BMC vendor!\n",
+			  i);
+	else
+		pb_debug_fn("%hu blocks read\n", i);
+
+	prefix = talloc_strndup(mailbox_buffer, mailbox_buffer + 3,
+			strlen("petitboot,bootdevs="));
+	if (!prefix) {
+		pb_log_fn("Couldn't check prefix\n");
+		talloc_free(mailbox_buffer);
+		return -1;
+	}
+
+	if (strncmp(prefix, "petitboot,bootdevs=",
+				strlen("petitboot,bootdevs=")) != 0 ) {
+		/* Empty or garbage */
+		pb_debug_fn("Buffer looks unconfigured\n");
+		talloc_free(mailbox_buffer);
+		*buf = NULL;
+		return 0;
+	}
+
+
+	/* Don't include IANA number in buffer */
+	content_size = (i + 1) * blocksize - 3 - strlen("petitboot,bootdevs=");
+	*buf = talloc_memdup(platform,
+			mailbox_buffer + 3 + strlen("petitboot,bootdevs="),
+			content_size + 1);
+	(*buf)[content_size] = '\0';
+
+	talloc_free(mailbox_buffer);
+	return 0;
+}
+
+static int clear_ipmi_boot_mailbox(struct platform_powerpc *platform)
+{
+	uint8_t req[18] = {0}; /* req (2) + blocksize (16) */
+	uint16_t resp_len;
+	uint8_t resp[1];
+	uint8_t i;
+	int rc;
+
+	req[0] = 0x07;  /* parameter selector: boot initiator mailbox */
+
+	resp_len = sizeof(resp);
+
+	for (i = 0; i < 16; i++) {
+		req[1] = i; /* set selector */
+		rc = ipmi_transaction(platform->ipmi, IPMI_NETFN_CHASSIS,
+				IPMI_CMD_CHASSIS_SET_SYSTEM_BOOT_OPTIONS,
+				req, sizeof(req),
+				resp, &resp_len,
+				ipmi_timeout);
+
+		if (rc || resp[0]) {
+			if (i == 0) {
+				pb_log("platform: error clearing IPMI boot mailbox, rc %d resp[0] %hu\n",
+						rc, resp[0]);
+				return -1;
+			} else
+				break;
+		}
+	}
+
+	pb_debug_fn("Cleared %hu blocks\n", i);
+
+	return 0;
+}
+
 static int set_ipmi_os_boot_sensor(struct platform_powerpc *platform)
 {
 	int sensor_number;
@@ -605,6 +788,31 @@ static int load_config(struct platform *p, struct config *config)
 	if (rc)
 		pb_log_fn("Failed to parse nvram\n");
 
+	/*
+	 * If we have an IPMI mailbox configuration available use it instead of
+	 * the boot order found in NVRAM.
+	 */
+	if (platform->get_ipmi_boot_mailbox) {
+		char *mailbox;
+		struct param *param;
+		rc = platform->get_ipmi_boot_mailbox(platform, &mailbox);
+		if (!rc && mailbox) {
+			platform->ipmi_mailbox_original_config =
+				talloc_strdup(
+					platform,
+					param_list_get_value(
+						platform->params, "petitboot,bootdevs"));
+			param_list_set(platform->params, "petitboot,bootdevs",
+					mailbox, false);
+			param = param_list_get_param(platform->params,
+					"petitboot,bootdevs");
+			/* Avoid writing this to NVRAM */
+			param->modified = false;
+			config->ipmi_bootdev_mailbox = true;
+			talloc_free(mailbox);
+		}
+	}
+
 	config_populate_all(config, platform->params);
 
 	if (platform->get_ipmi_bootdev) {
@@ -630,6 +838,7 @@ static int save_config(struct platform *p, struct config *config)
 {
 	struct platform_powerpc *platform = to_platform_powerpc(p);
 	struct config *defaults;
+	struct param *param;
 
 	if (config->ipmi_bootdev == IPMI_BOOTDEV_INVALID &&
 	    platform->clear_ipmi_bootdev) {
@@ -637,6 +846,23 @@ static int save_config(struct platform *p, struct config *config)
 				config->ipmi_bootdev_persistent);
 		config->ipmi_bootdev = IPMI_BOOTDEV_NONE;
 		config->ipmi_bootdev_persistent = false;
+	}
+
+	if (!config->ipmi_bootdev_mailbox &&
+			platform->ipmi_mailbox_original_config) {
+		param = param_list_get_param(platform->params,
+				"petitboot,bootdevs");
+		/* Restore old boot order if unmodified */
+		if (!param->modified) {
+			param_list_set(platform->params, "petitboot,bootdevs",
+					platform->ipmi_mailbox_original_config,
+					false);
+			param->modified = false;
+			config_populate_bootdev(config, platform->params);
+		}
+		platform->clear_ipmi_boot_mailbox(platform);
+		talloc_free(platform->ipmi_mailbox_original_config);
+		platform->ipmi_mailbox_original_config = NULL;
 	}
 
 	defaults = talloc_zero(platform, struct config);
@@ -718,6 +944,8 @@ static bool probe(struct platform *p, void *ctx)
 		platform->ipmi = ipmi_open(platform);
 		platform->get_ipmi_bootdev = get_ipmi_bootdev_ipmi;
 		platform->clear_ipmi_bootdev = clear_ipmi_bootdev_ipmi;
+		platform->get_ipmi_boot_mailbox = get_ipmi_boot_mailbox;
+		platform->clear_ipmi_boot_mailbox = clear_ipmi_boot_mailbox;
 		platform->set_os_boot_sensor = set_ipmi_os_boot_sensor;
 	} else if (!stat(sysparams_dir, &statbuf)) {
 		pb_debug("platform: using sysparams for IPMI paramters\n");
