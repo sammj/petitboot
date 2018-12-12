@@ -20,6 +20,7 @@
 #include <url/url.h>
 #include <i18n/i18n.h>
 #include <pb-config/pb-config.h>
+#include <rust/rustlibs.h>
 
 #include <sys/sysmacros.h>
 #include <sys/types.h>
@@ -1843,6 +1844,13 @@ void device_handler_add_plugin_option(struct device_handler *handler,
 					opt->id);
 			return;
 		}
+	}
+
+	if (opt->command_file) {
+		opt->n_commands = parse_command_file(opt, opt->command_file,
+				&opt->commands);
+		pb_log("Plugin %s included %d command definitions\n",
+				opt->name, opt->n_commands);
 	}
 
 	handler->plugins = talloc_realloc(handler, handler->plugins,
