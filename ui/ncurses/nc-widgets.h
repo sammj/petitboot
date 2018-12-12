@@ -90,6 +90,7 @@ int widget_width(struct nc_widget *widget);
 int widget_y(struct nc_widget *widget);
 int widget_x(struct nc_widget *widget);
 int widget_focus_y(struct nc_widget *widget);
+struct nc_widget *current_widget(struct nc_widgetset *set);
 
 /* widgetset API */
 typedef void (*widget_focus_cb)(struct nc_widget *widget, void *arg);

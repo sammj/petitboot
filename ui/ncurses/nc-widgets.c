@@ -1402,3 +1402,16 @@ int widget_focus_y(struct nc_widget *widget)
 	return widget->focus_y;
 }
 
+struct nc_widget *current_widget(struct nc_widgetset *set)
+{
+	FIELD *f;
+
+	f = current_field(set->form);
+
+	if (!f) {
+		pb_debug_fn("No field is selected!\n");
+		return NULL;
+	}
+
+	return field_userptr(f);
+}
