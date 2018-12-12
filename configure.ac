@@ -450,6 +450,15 @@ esac
 
 AC_DEFINE_UNQUOTED(TFTP_TYPE, $tftp_type, [tftp client type])
 
+AC_ARG_VAR(
+	[CARGO_OPTS],
+	[Arguments to cargo]
+)
+AC_ARG_VAR(
+	[RUSTC_TARGET_NAME],
+	[Target as passed to cargo]
+)
+
 default_cflags="--std=gnu99 -g \
 	-Wall -W -Wunused -Wstrict-prototypes -Wmissing-prototypes \
 	-Wmissing-declarations -Wredundant-decls"

@@ -72,4 +72,3 @@ include ui/test/Makefile.am
 include man/Makefile.am
 
 include utils/Makefile.am
-

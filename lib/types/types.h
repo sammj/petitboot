@@ -66,6 +66,32 @@ struct boot_option {
 	} type;
 };
 
+enum cmd_arg_type {
+	ARG_STR,
+	ARG_I64,
+	ARG_F64,
+};
+
+struct argument {
+	char			*name;
+	enum cmd_arg_type	type;
+	union {
+		char		*arg_str;
+		int64_t		arg_i64;
+		double		arg_f64;
+	};
+};
+
+struct command {
+	char			*platform;
+	char			*name;
+	char			*cmd;
+	char			*args_fmt;
+	unsigned int		n_args;
+	struct argument		*args;
+	char			*help;
+};
+
 struct plugin_option {
 	char		*id;
 	char		*name;
@@ -74,9 +100,13 @@ struct plugin_option {
 	char		*version;
 	char		*date;
 	char		*plugin_file;
+	char		*command_file;
 
 	unsigned int	n_executables;
 	char		**executables;
+
+	unsigned int	n_commands;
+	struct command	*commands;
 
 	void		*ui_info;
 };

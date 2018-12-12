@@ -12,6 +12,8 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
+include lib/rust/Makefile.am
+
 core_lib = lib/libpbcore.la
 
 noinst_LTLIBRARIES += $(core_lib)
@@ -70,7 +72,12 @@ lib_libpbcore_la_SOURCES = \
 	lib/efi/efivar.h \
 	lib/efi/efivar.c \
 	lib/param_list/param_list.c \
-	lib/param_list/param_list.h
+	lib/param_list/param_list.h \
+	lib/rust/rustlibs.c \
+	lib/rust/rustlibs.c
+
+lib_libpbcore_la_LIBADD = \
+	$(rust_lib)
 
 if ENABLE_MTD
 lib_libpbcore_la_SOURCES += \
