@@ -262,7 +262,6 @@ int cui_run_cmd(struct cui *cui, const char **cmd_argv)
 	refresh();
 
 	redrawwin(cui->current->main_ncw);
-	nc_scr_post(cui->current);
 
 	if (result) {
 		pb_log_fn("failed: '%s'\n", cmd_argv[0]);
