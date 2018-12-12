@@ -63,6 +63,7 @@ int pb_protocol_boot_status_len(const struct status *status);
 int pb_protocol_system_info_len(const struct system_info *sysinfo);
 int pb_protocol_config_len(const struct config *config);
 int pb_protocol_url_len(const char *url);
+int pb_protocol_command_len(const struct command *command);
 int pb_protocol_plugin_option_len(const struct plugin_option *opt);
 int pb_protocol_temp_autoboot_len(const struct autoboot_option *opt);
 int pb_protocol_authenticate_len(struct auth_message *msg);
@@ -88,6 +89,8 @@ int pb_protocol_serialise_system_info(const struct system_info *sysinfo,
 int pb_protocol_serialise_config(const struct config *config,
 		char *buf, int buf_len);
 int pb_protocol_serialise_url(const char *url, char *buf, int buf_len);
+int pb_protocol_serialise_command(char *buf,
+		const struct command *command);
 int pb_protocol_serialise_plugin_option(const struct plugin_option *opt,
 		char *buf, int buf_len);
 int pb_protocol_serialise_temp_autoboot(const struct autoboot_option *opt,
@@ -119,6 +122,9 @@ int pb_protocol_deserialise_system_info(struct system_info *sysinfo,
 
 int pb_protocol_deserialise_config(struct config *config,
 		const struct pb_protocol_message *message);
+
+int pb_protocol_deserialise_command(void *ctx, const char **pos,
+		unsigned int *len, struct command *command);
 
 int pb_protocol_deserialise_plugin_option(struct plugin_option *opt,
 		const struct pb_protocol_message *message);

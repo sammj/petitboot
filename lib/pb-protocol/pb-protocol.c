@@ -346,6 +346,41 @@ int pb_protocol_url_len(const char *url)
 	return 4 + optional_strlen(url);
 }
 
+int pb_protocol_command_len(const struct command *cmd)
+{
+	unsigned int i, len = 0;
+
+	len += 4 + optional_strlen(cmd->platform);
+	len += 4 + optional_strlen(cmd->name);
+	len += 4 + optional_strlen(cmd->cmd);
+	len += 4 + optional_strlen(cmd->args_fmt);
+	len += 4; /* n_args */
+
+	for (i = 0; i < cmd->n_args; i++) {
+		len += 4 + optional_strlen(cmd->args[i].name);
+		len += 4; /* type */
+		switch(cmd->args[i].type) {
+		case ARG_STR:
+			len += 4 + optional_strlen(cmd->args[i].arg_str);
+			break;
+		case ARG_I64:
+			len += sizeof(cmd->args[i].arg_i64);
+			break;
+		case ARG_F64:
+			len += sizeof(cmd->args[i].arg_f64);
+			break;
+		default:
+			pb_log("Argument %s has unknown field type %d\n",
+					cmd->args[i].name,
+					cmd->args[i].type);
+			break;
+		}
+	}
+
+	len += 4 + optional_strlen(cmd->help);
+
+	return len;
+}
 
 int pb_protocol_plugin_option_len(const struct plugin_option *opt)
 {
@@ -362,6 +397,10 @@ int pb_protocol_plugin_option_len(const struct plugin_option *opt)
 	len += 4; /* n_executables */
 	for (i = 0; i < opt->n_executables; i++)
 		len += 4 + optional_strlen(opt->executables[i]);
+
+	len += 4; /* command options */
+	for (i = 0; i < opt->n_commands; i++)
+		len += pb_protocol_command_len(&opt->commands[i]);
 
 	return len;
 }
@@ -682,6 +721,51 @@ int pb_protocol_serialise_url(const char *url, char *buf, int buf_len)
 	return 0;
 }
 
+int pb_protocol_serialise_command(char *buf,
+		const struct command *config)
+{
+	char *pos = buf;
+	unsigned int i;
+
+	pos += pb_protocol_serialise_string(pos, config->platform);
+	pos += pb_protocol_serialise_string(pos, config->name);
+	pos += pb_protocol_serialise_string(pos, config->cmd);
+	pos += pb_protocol_serialise_string(pos, config->args_fmt);
+
+	*(uint32_t *)pos = __cpu_to_be32(config->n_args);
+	pos += 4;
+
+	for (i = 0; i < config->n_args; i++) {
+		pos += pb_protocol_serialise_string(pos, config->args[i].name);
+		*(enum cmd_arg_type *)pos = config->args[i].type;
+		pos += sizeof(enum cmd_arg_type);
+
+		switch(config->args[i].type) {
+		case ARG_STR:
+			pos += pb_protocol_serialise_string(pos,
+					config->args[i].arg_str);
+			break;
+		case ARG_I64:
+			*(int64_t *)pos = __cpu_to_be64(config->args[i].arg_i64);
+			pos += sizeof(int64_t);
+			break;
+		case ARG_F64:
+			memcpy(pos, &config->args[i].arg_f64, sizeof(double));
+			pos += sizeof(double);
+			break;
+		default:
+			pb_log("Argument %s with unknown field type %d skipped\n",
+					config->args[i].name,
+					config->args[i].type);
+			break;
+		}
+	}
+
+	pos += pb_protocol_serialise_string(pos, config->help);
+
+	return pos - buf;
+}
+
 int pb_protocol_serialise_plugin_option(const struct plugin_option *opt,
 		char *buf, int buf_len)
 {
@@ -701,6 +785,13 @@ int pb_protocol_serialise_plugin_option(const struct plugin_option *opt,
 
 	for (i = 0; i < opt->n_executables; i++)
 		pos += pb_protocol_serialise_string(pos, opt->executables[i]);
+
+	*(uint32_t *)pos = __cpu_to_be32(opt->n_commands);
+	pos += 4;
+
+	for (i = 0; i < opt->n_commands; i++)
+		pos += pb_protocol_serialise_command(pos,
+				&opt->commands[i]);
 
 	assert(pos <= buf + buf_len);
 	(void)buf_len;
@@ -1318,6 +1409,71 @@ out:
 	return rc;
 }
 
+int pb_protocol_deserialise_command(void *ctx, const char **pos,
+		unsigned int *len, struct command *cmd)
+{
+	unsigned int i;
+	char *str;
+	int rc = -1;
+
+	if (read_string(ctx, pos, len, &str))
+		goto out;
+	cmd->platform = str;
+
+	if (read_string(ctx, pos, len, &str))
+		goto out;
+	cmd->name = str;
+
+	if (read_string(ctx, pos, len, &str))
+		goto out;
+	cmd->cmd = str;
+
+	if (read_string(ctx, pos, len, &str))
+		goto out;
+	cmd->args_fmt = str;
+
+	if (read_u32(pos, len, &cmd->n_args))
+		goto out;
+
+	cmd->args = talloc_zero_array(ctx, struct argument, cmd->n_args);
+	for (i = 0; i < cmd->n_args; i++) {
+		if (read_string(ctx, pos, len, &str))
+			goto out;
+		cmd->args[i].name = str;
+
+		cmd->args[i].type = *(enum cmd_arg_type *)*pos;
+		*pos += sizeof(enum cmd_arg_type);
+
+		switch (cmd->args[i].type) {
+		case ARG_STR:
+			if (read_string(ctx, pos, len, &str))
+				goto out;
+			cmd->args[i].arg_str = str;
+			break;
+		case ARG_I64:
+			cmd->args[i].arg_i64 = __be64_to_cpu(*(int64_t *)(*pos));
+			*pos += sizeof(int64_t);
+			break;
+		case ARG_F64:
+			memcpy(&cmd->args[i].arg_f64, *pos, sizeof(double));
+			*pos += sizeof(double);
+			break;
+		default:
+			pb_log("Unknown field type %d for argument %s\n",
+					cmd->args[i].type,
+					cmd->args[i].name);
+		}
+	}
+
+	if (read_string(ctx, pos, len, &str))
+		goto out;
+	cmd->help = str;
+
+	rc = 0;
+out:
+	return rc;
+}
+
 int pb_protocol_deserialise_plugin_option(struct plugin_option *opt,
 		const struct pb_protocol_message *message)
 {
@@ -1370,6 +1526,18 @@ int pb_protocol_deserialise_plugin_option(struct plugin_option *opt,
 			goto out;
 		opt->executables[i] = talloc_strdup(opt, str);
 	}
+
+	if (read_u32(&pos, &len, &tmp))
+		goto out;
+	opt->n_commands = tmp;
+
+	opt->commands = talloc_zero_array(opt, struct command, opt->n_commands);
+	if (!opt->commands)
+		goto out;
+
+	for (i = 0; i < opt->n_commands; i++)
+		pb_protocol_deserialise_command(opt, &pos, &len,
+				&opt->commands[i]);
 
 	rc = 0;
 out:

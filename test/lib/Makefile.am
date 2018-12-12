@@ -24,7 +24,8 @@ lib_TESTS = \
 	test/lib/test-process-both \
 	test/lib/test-process-stdout-eintr \
 	test/lib/test-fold \
-	test/lib/test-efivar
+	test/lib/test-efivar \
+	test/lib/test-protocol
 
 if WITH_OPENSSL
 lib_TESTS += \
