@@ -36,11 +36,21 @@
 #include "process/process.h"
 #include "system/system.h"
 
-#define N_FIELDS        15
+#define N_FIELDS        17
 
 extern const struct help_text plugin_help_text;
 
 static void plugin_run_command(void *arg);
+
+struct command_option {
+	// TODO If platform doesn't match a) warn, or b) hide?
+	struct nc_widget_label		*name_l;
+	struct nc_widget_button		*cmd_b; /* cmd + args_fmt */
+	unsigned int 			n_args;
+	struct nc_widget_label		**arg_l;
+	struct nc_widget_textbox	**arg_f;
+	struct nc_widget_label		*help_l;
+};
 
 struct plugin_screen {
 	struct nc_scr		scr;
@@ -76,9 +86,13 @@ struct plugin_screen {
 
 		struct nc_widget_label		*commands_l;
 		struct nc_widget_select		*commands_f;
-
+		struct nc_widget_label		*exec_args_l;
+		struct nc_widget_textbox	*exec_args_f;
 		struct nc_widget_button		*run_b;
 	} widgets;
+
+	struct command_option *commands;
+	unsigned int n_commands;
 };
 
 static void plugin_screen_draw(struct plugin_screen *screen,
@@ -203,7 +217,116 @@ static void plugin_screen_resize(struct nc_scr *scr)
 	plugin_screen_post(scr);
 }
 
+static void update_arguments(struct plugin_screen *screen, int cmd_idx)
+{
+	struct command_option *opt;
+	struct command *cmd;
+	unsigned int i;
+	char *field;
+
+	opt = &screen->commands[cmd_idx];
+	cmd = &screen->opt->commands[cmd_idx];
+
+	for (i = 0; i < opt->n_args; i++) {
+		field = widget_textbox_get_value(opt->arg_f[i]);
+
+		switch (cmd->args[i].type) {
+		case ARG_STR:
+			talloc_free(cmd->args[i].arg_str);
+			cmd->args[i].arg_str = talloc_strdup(screen, field);
+			break;
+		case ARG_I64:
+			{
+			int64_t val;
+			val = strtol(field, NULL, 10);
+			if (!errno)
+				cmd->args[i].arg_i64 = val;
+			break;
+			}
+		case ARG_F64:
+			{
+			double val;
+			val = strtod(field, NULL);
+			if (!errno)
+				cmd->args[i].arg_f64 = val;
+			break;
+			}
+		}
+	}
+}
+
 static void plugin_run_command(void *arg)
+{
+	struct plugin_screen *screen = arg;
+	struct nc_widget *current;
+	struct command_option *opt;
+	int result, n_var;
+	unsigned int idx;
+	char *fmt, *args, *var, *cmd_str;
+
+
+	/* Get selected command */
+	current = current_widget(screen->widgetset);
+	if (!current) {
+		pb_log_fn("No command selected!\n");
+		return;
+	}
+
+	opt = NULL;
+	for (idx = 0; idx < screen->n_commands; idx++) {
+		if (widget_button_base(screen->commands[idx].cmd_b) == current) {
+			opt = &screen->commands[idx];
+			break;
+		}
+	}
+
+	if (!opt) {
+		pb_log_fn("Could not find current option\n");
+		return;
+	}
+
+	fmt = talloc_strdup(screen, screen->opt->commands[idx].args_fmt);
+	cmd_str = talloc_asprintf(screen, "%s ", screen->opt->commands[idx].cmd);
+	n_var = 0;
+	args = fmt;
+	while (args) {
+		var = strstr(args, "{}");
+		if (var)
+			*var = '\0';
+		cmd_str = talloc_asprintf_append(cmd_str, "%s%s",
+				args, var ? widget_textbox_get_value(
+					opt->arg_f[n_var++]) : "");
+
+		args = var ? var + 2 : NULL;
+	}
+
+	const char *argv[] = {
+		pb_system_apps.pb_exec,
+		cmd_str,
+		NULL,
+	};
+
+	/* Drop our pad before running plugin */
+	delwin(screen->pad);
+	screen->pad = NULL;
+
+	result = cui_run_cmd(screen->cui, argv);
+
+	if (result)
+		pb_log("Failed to run command option %s\n", argv[1]);
+	else {
+		update_arguments(screen, idx);
+		nc_scr_status_printf(screen->cui->current, _("Finished: %s"),
+				argv[1]);
+	}
+
+	talloc_free(fmt);
+	talloc_free(cmd_str);
+
+	plugin_screen_draw(screen, NULL);
+}
+
+static void plugin_run_command_single(void *arg)
 {
 	struct plugin_screen *screen = arg;
 	char *cmd;
@@ -222,6 +345,7 @@ static void plugin_run_command(void *arg)
 	const char *argv[] = {
 		pb_system_apps.pb_exec,
 		cmd,
+		widget_textbox_get_value(screen->widgets.exec_args_f),
 		NULL
 	};
 
@@ -246,7 +370,7 @@ static void plugin_run_command_check(void *arg)
 	struct plugin_screen *screen = arg;
 
 	if (discover_client_authenticated(screen->cui->client)) {
-		plugin_run_command(screen);
+		plugin_run_command_single(screen);
 		return;
 	}
 
@@ -283,17 +407,81 @@ static void plugin_screen_setup_widgets(struct plugin_screen *screen)
 	screen->widgets.date_l = widget_new_label(set, 0, 0, _("Date"));
 	screen->widgets.date_f = widget_new_label(set, 0, 0, opt->date);
 
-	screen->widgets.commands_l = widget_new_label(set, 0, 0,
-							 _("Commands:"));
 	screen->widgets.commands_f = widget_new_select(set, 0, 0,
 			COLS - screen->field_x - 1);
-	for (i = 0; i < opt->n_executables; i++) {
-		widget_select_add_option(screen->widgets.commands_f, i,
-				basename(opt->executables[i]), i == 0);
+	if (opt->n_executables) {
+		screen->widgets.commands_l = widget_new_label(set, 0, 0,
+				_("Executables:"));
+		for (i = 0; i < opt->n_executables; i++) {
+			widget_select_add_option(screen->widgets.commands_f, i,
+					basename(opt->executables[i]), i == 0);
+		}
+
+		screen->widgets.exec_args_l = widget_new_label(set, 0, 0,
+				_("Arguments:"));
+		screen->widgets.exec_args_f = widget_new_textbox(set, 0, 0, 30,
+				"");
+
+		screen->widgets.run_b = widget_new_button(set, 0, 0, 30,
+				_("Run selected executable"),
+				plugin_run_command_check, screen);
 	}
 
-	screen->widgets.run_b = widget_new_button(set, 0, 0, 30,
-			_("Run selected command"), plugin_run_command_check, screen);
+	screen->n_commands = opt->n_commands;
+	screen->commands = talloc_array(screen, struct command_option,
+			screen->n_commands);
+	for (i = 0; i < opt->n_commands; i++) {
+		unsigned int j;
+		char *label;
+		screen->commands[i].name_l = widget_new_label(set, 0, 0,
+				opt->commands[i].name);
+		label = talloc_asprintf(screen, "%s %s",
+				opt->commands[i].cmd,
+				opt->commands[i].args_fmt);
+		screen->commands[i].cmd_b = widget_new_button(set, 0, 0, 45,
+				label, plugin_run_command, screen);
+		screen->commands[i].n_args = opt->commands[i].n_args;
+		screen->commands[i].arg_l = talloc_zero_array(screen,
+				struct nc_widget_label *,
+				screen->commands[i].n_args);
+		screen->commands[i].arg_f = talloc_zero_array(screen,
+				struct nc_widget_textbox *,
+				screen->commands[i].n_args);
+		for (j = 0; j < screen->commands[i].n_args; j++) {
+			screen->commands[i].arg_l[j] = widget_new_label(set,
+					0, 0,
+					opt->commands[i].args[j].name);
+			switch (opt->commands[i].args[j].type) {
+			case ARG_STR:
+				screen->commands[i].arg_f[j] =
+					widget_new_textbox(set, 0, 0, 20,
+						opt->commands[i].args[j].arg_str);
+				break;
+			case ARG_I64:
+				label = talloc_asprintf(screen, "%ld",
+						opt->commands[i].args[j].arg_i64);
+				screen->commands[i].arg_f[j] =
+					widget_new_textbox(set, 0, 0, 20,
+							label);
+				break;
+			case ARG_F64:
+				label = talloc_asprintf(screen, "%f",
+						opt->commands[i].args[j].arg_f64);
+				screen->commands[i].arg_f[j] =
+					widget_new_textbox(set, 0, 0, 20,
+							label);
+				break;
+			default:
+				label = talloc_asprintf(screen, "<unknown field type>");
+				screen->commands[i].arg_f[j] =
+					widget_new_textbox(set, 0, 0, 20,
+							label);
+			}
+		}
+		screen->commands[i].help_l = widget_new_label(set, 0, 0,
+				opt->commands[i].help);
+	}
+
 }
 
 static int layout_pair(struct plugin_screen *screen, int y,
@@ -308,7 +496,7 @@ static int layout_pair(struct plugin_screen *screen, int y,
 
 static void plugin_screen_layout_widgets(struct plugin_screen *screen)
 {
-	unsigned int y;
+	unsigned int y, i;
 
 	/* list of details (static) */
 
@@ -329,15 +517,45 @@ static void plugin_screen_layout_widgets(struct plugin_screen *screen)
 
 	y += 1;
 
-	/* available commands */
-	widget_move(widget_label_base(screen->widgets.commands_l), y,
-		    screen->label_x);
-	widget_move(widget_select_base(screen->widgets.commands_f), y,
-			screen->field_x);
+	if (widget_select_get_value(screen->widgets.commands_f) != -1) {
+		/* available executables */
+		widget_move(widget_label_base(screen->widgets.commands_l), y,
+			    screen->label_x);
+		widget_move(widget_select_base(screen->widgets.commands_f), y,
+				screen->field_x);
+
+		y += 1;
+
+		layout_pair(screen, y++, screen->widgets.exec_args_l,
+				widget_textbox_base(screen->widgets.exec_args_f));
+		widget_move(widget_button_base(screen->widgets.run_b), y++,
+				screen->field_x);
+
+		y += 2;
+	}
+
+
+	for (i = 0; i < screen->n_commands; i++) {
+		unsigned int j;
+		widget_move(widget_label_base(screen->commands[i].name_l), y++,
+			    screen->label_x);
+		widget_move(widget_button_base(screen->commands[i].cmd_b), y++,
+			    screen->field_x);
+
+		for (j = 0; j < screen->commands[i].n_args; j++) {
+			widget_move(widget_label_base(screen->commands[i].arg_l[j]),
+					y, screen->field_x);
+			widget_move(widget_textbox_base(screen->commands[i].arg_f[j]),
+					y, screen->field_x * 2);
+			y += 1;
+		}
+
+		widget_move(widget_label_base(screen->commands[i].help_l), y++,
+			    screen->label_x);
+		y += 1;
+	}
 
 	y += 2;
-
-	widget_move(widget_button_base(screen->widgets.run_b), y++, screen->field_x);
 
 }
 
@@ -402,7 +620,7 @@ struct plugin_screen *plugin_screen_init(struct cui *cui,
 	screen->cui = cui;
 	screen->on_exit = on_exit;
 	screen->label_x = 2;
-	screen->field_x = 25;
+	screen->field_x = 15;
 
 	screen->scr.frame.ltitle = talloc_strdup(screen,
 			_("Petitboot Plugin"));
