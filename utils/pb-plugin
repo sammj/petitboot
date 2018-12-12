@@ -2,7 +2,7 @@
 
 __dest=/
 __pb_mount_dir=/var/petitboot/mnt/dev/
-plugin_abi=1
+plugin_abi=2
 plugin_ext=pb-plugin
 plugin_meta=pb-plugin.conf
 plugin_meta_dir=etc/preboot-plugins/
@@ -235,6 +235,7 @@ do_install()
 		name=$PLUGIN_NAME id=$PLUGIN_ID version=$PLUGIN_VERSION \
 		vendor=$PLUGIN_VENDOR vendor_id=$PLUGIN_VENDOR_ID \
 		date=$PLUGIN_DATE executables="$PLUGIN_EXECUTABLES" \
+		plugin_commands="${__dest}/${PLUGIN_COMMANDS}" \
 		source_file=$url installed="yes"
 
 	echo "Plugin installed"
@@ -364,6 +365,10 @@ shell environment (eg, /usr/bin/my-raid-config).
 If multiple executables are provided, separate with a space.
 EOF
 	read executables
+cat <<EOF
+Enter a command definition JSON file (optional)
+EOF
+	read plugin_commands
 
 	date=$(date +%Y-%m-%d)
 
@@ -379,6 +384,7 @@ PLUGIN_ID='$pluginshortname'
 PLUGIN_VERSION='$version'
 PLUGIN_DATE='$date'
 PLUGIN_EXECUTABLES='$executables'
+PLUGIN_COMMANDS='${plugin_commands}'
 EOF
 
 }

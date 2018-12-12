@@ -601,6 +601,8 @@ static int user_event_plugin(struct user_event *uev, struct event *event)
 	opt->date = talloc_strdup(opt, event_get_param(event, "date"));
 	opt->plugin_file = talloc_strdup(opt,
 			event_get_param(event, "source_file"));
+	opt->command_file = talloc_strdup(opt,
+			event_get_param(event, "plugin_commands"));
 
 	executables = talloc_strdup(opt, event_get_param(event, "executables"));
 	if (!executables) {
