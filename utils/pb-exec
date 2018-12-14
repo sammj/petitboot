@@ -1,7 +1,13 @@
 #!/bin/sh
 
+if [[ "$(id -u)" != "0" ]]; then
+	PREFIX="sudo"
+else
+	PREFIX=""
+fi
+
 # Run a program specified by Petitboot.
-$@
+$PREFIX $@
 echo "$0 ran '$@'"
 
 # Wait for the user to exit back to Petitboot.
