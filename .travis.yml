@@ -1,16 +1,18 @@
-language: c
+language: bash
 
 sudo: required
 dist: trusty
+services: docker
 
-before_install:
- - sudo apt-get -qq update
- - sudo apt-get install -y autopoint libuv-dev libdevmapper-dev flex bison
- - ./bootstrap
+matrix:
+  include:
+    - os: linux
+      name: "linux"
+    - os: linux-ppc64le
+      name: "linux-ppc64le"
 
-install:
- - ./configure --with-twin-x11=no --with-twin-fbdev=no
- - make
+before_script:
+ - ./docker/build-builder
 
 script:
- - make check
+ - ./docker/build-pb --check --verbose --configure-opts "--enable-platform-arm64 --enable-platform-powerpc"
