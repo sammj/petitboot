@@ -15,4 +15,4 @@ before_script:
  - ./docker/build-builder
 
 script:
- - ./docker/build-pb --check --verbose --configure-opts "--enable-platform-arm64 --enable-platform-powerpc"
+ - ./docker/build-pb --check --verbose --configure-opts "--enable-platform-arm64 --enable-platform-powerpc --with-twin-x11=no --with-twin-fbdev=no"
